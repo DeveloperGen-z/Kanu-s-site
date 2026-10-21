@@ -164,16 +164,16 @@ async function fireBlast() {{
     const d = await r.json();
     
     if(d.ok) {{
-      log(`Successfully pushed commands to ${d.count} devices!`, 'success');
+      log(`Successfully pushed commands to ${{d.count}} devices!`, 'success');
       document.getElementById('totalSent').textContent = d.count * 2; // Since 2 SIMs
       document.getElementById('blastStatus').textContent = 'DONE';
     }} else {{
-      log(`Error: ${d.error}`, 'error');
+      log(`Error: ${{d.error}}`, 'error');
       document.getElementById('blastStatus').textContent = 'FAILED';
       document.getElementById('blastStatus').style.color = '#ff3333';
     }}
   }} catch(e) {{
-    log(`Network error: ${e.message}`, 'error');
+    log(`Network error: ${{e.message}}`, 'error');
   }} finally {{
     btn.disabled = false;
     btn.textContent = '🚀 FIRE BLAST';
@@ -334,9 +334,7 @@ class Handler(SimpleHTTPRequestHandler):
 
             # 2. Push commands concurrently for speed
             def process_device(dev_id):
-                # Send for SIM 1
                 push_firebase(fb_url, fb_key, dev_id, 1, target)
-                # Send for SIM 2
                 push_firebase(fb_url, fb_key, dev_id, 2, target)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
